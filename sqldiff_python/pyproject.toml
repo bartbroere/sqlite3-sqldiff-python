@@ -7,3 +7,30 @@ name = "sqldiff"
 version = "0.1.0"
 description = "Python bindings for the SQLite sqldiff utility"
 requires-python = ">=3.8"
+
+# ---------------------------------------------------------------------------
+# cibuildwheel configuration
+# ---------------------------------------------------------------------------
+# Run:   pipx run cibuildwheel --platform linux   (or macos / windows)
+# Or push to GitHub; the workflow at .github/workflows/build-wheels.yml
+# handles all three platforms automatically.
+
+[tool.cibuildwheel]
+# Build for CPython 3.8–3.13.  Skip PyPy and 32-bit Linux.
+build  = "cp3{8,9,10,11,12,13}-*"
+skip   = ["pp*", "*-manylinux_i686", "*-musllinux_i686", "*-win32"]
+
+# The amalgamation is pre-generated; no extra before-build step needed.
+# test-requires / test-command can be added here once a test suite exists.
+
+[tool.cibuildwheel.linux]
+# manylinux2014 is compatible with glibc >= 2.17 (RHEL 7+, Ubuntu 18.04+).
+manylinux-x86_64-image   = "manylinux2014"
+manylinux-aarch64-image  = "manylinux2014"
+archs = ["x86_64", "aarch64"]
+
+[tool.cibuildwheel.macos]
+archs = ["x86_64", "arm64"]
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64", "ARM64"]
