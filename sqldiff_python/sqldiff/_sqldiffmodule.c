@@ -23,12 +23,13 @@
 **   2. #define main  ->  an unused symbol, preventing a duplicate
 **      definition of main().
 **
-** Output that the sqldiff functions write to a FILE * is captured via
-** open_memstream() and converted to a Python str (diff) or bytes
-** (changeset) before being returned to the caller.
+** Output that the sqldiff functions write to a FILE * is captured via a
+** temporary file (tmpfile()) on all platforms and converted to a Python
+** str (diff) or bytes (changeset) before being returned to the caller.
 **
 ** Error messages printed by sqldiff to stderr are captured via a
-** dup2/pipe trick and surfaced as Python RuntimeError exceptions.
+** pipe/dup2 trick and surfaced as Python RuntimeError exceptions.
+** This works on both POSIX (unistd.h) and Windows (io.h).
 */
 
 #define PY_SSIZE_T_CLEAN
@@ -37,8 +38,28 @@
 #include <setjmp.h>
 #include <string.h>
 #include <stdio.h>
-#include <unistd.h>
-#include <fcntl.h>
+#include <stdlib.h>
+
+/* =========================================================
+ * Platform-compatibility layer
+ * ========================================================= */
+
+#ifdef _WIN32
+#  include <io.h>
+#  include <fcntl.h>
+   /* Map POSIX names to their MSVC underscore equivalents. */
+#  define pipe(fds)            _pipe((fds), 65536, _O_BINARY)
+#  define dup(fd)              _dup(fd)
+#  define dup2(src, dst)       _dup2((src), (dst))
+#  define close(fd)            _close(fd)
+#  define read(fd, buf, n)     _read((fd), (buf), (unsigned int)(n))
+#  ifndef STDERR_FILENO
+#    define STDERR_FILENO 2
+#  endif
+#else
+#  include <unistd.h>
+#  include <fcntl.h>
+#endif
 
 /* =========================================================
  * Error-recovery state (module-level globals, protected by
@@ -68,22 +89,87 @@ static int _sd_stderr_save  = -1;   /* saved copy of STDERR_FILENO */
 /* Rename main() so it doesn't clash with Python's own main(). */
 #define main sqldiff_main_unused__
 
-/* sqldiff.c includes "sqlite3_stdio.h" (found via -I in setup.py)
- * and "sqlite3.h" (resolved from the system include path). */
+/* sqldiff.c includes "sqlite3_stdio.h" and "sqlite3.h", both of which
+ * are resolved from the sqlite_src/ directory added via -I in setup.py. */
 #include "../../tool/sqldiff.c"
 
 #undef exit
 #undef main
 
 /* =========================================================
- * Stderr-capture helpers
+ * Portable output capture using tmpfile()
+ *
+ * tmpfile() is specified by the C standard to open in "wb+" (binary)
+ * mode, so it is safe for both text (diff) and binary (changeset) output
+ * on all platforms including Windows.
  * ========================================================= */
 
-/* Redirect fd 2 to a pipe so we can read error messages later.
- * Returns 0 on success, -1 on failure (in which case stderr is
- * unchanged and _sd_stderr_save / _sd_err_pipe stay at -1). */
+/* Read the entire content of f (which must be positioned at the end,
+ * as it is right after writing) into a Python str.  Closes f. */
+static PyObject *
+file_to_str(FILE *f)
+{
+    long sz;
+    char *buf;
+    PyObject *result;
+
+    fflush(f);
+    sz = ftell(f);
+    rewind(f);
+    if (sz < 0) { fclose(f); PyErr_SetFromErrno(PyExc_OSError); return NULL; }
+    buf = (char *)malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return PyErr_NoMemory(); }
+    if (fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+        free(buf); fclose(f); PyErr_SetFromErrno(PyExc_OSError); return NULL;
+    }
+    buf[sz] = '\0';
+    fclose(f);
+    result = PyUnicode_FromStringAndSize(buf, (Py_ssize_t)sz);
+    free(buf);
+    return result;
+}
+
+/* Same but returns bytes (for binary changeset data). */
+static PyObject *
+file_to_bytes(FILE *f)
+{
+    long sz;
+    char *buf;
+    PyObject *result;
+
+    fflush(f);
+    sz = ftell(f);
+    rewind(f);
+    if (sz < 0) { fclose(f); PyErr_SetFromErrno(PyExc_OSError); return NULL; }
+    buf = (char *)malloc((size_t)(sz ? sz : 1));
+    if (!buf) { fclose(f); return PyErr_NoMemory(); }
+    if (sz > 0 && fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+        free(buf); fclose(f); PyErr_SetFromErrno(PyExc_OSError); return NULL;
+    }
+    fclose(f);
+    result = PyBytes_FromStringAndSize(buf, (Py_ssize_t)sz);
+    free(buf);
+    return result;
+}
+
+/* =========================================================
+ * Stderr-capture helpers
+ *
+ * Strategy: redirect fd 2 to the write-end of a pipe, keep the
+ * read-end for later.  After the operation, restore fd 2 from the
+ * saved copy (which closes the write-end, signalling EOF to the
+ * read-end), then drain the pipe with a plain read().
+ *
+ * This avoids needing non-blocking I/O: by the time we read, the
+ * write-end is already closed and read() will return all data then
+ * EOF without ever blocking.
+ * ========================================================= */
+
 static int begin_stderr_capture(void)
 {
+    _sd_err_pipe[0] = _sd_err_pipe[1] = -1;
+    _sd_stderr_save = -1;
+
     if (pipe(_sd_err_pipe) < 0)
         return -1;
     _sd_stderr_save = dup(STDERR_FILENO);
@@ -92,37 +178,38 @@ static int begin_stderr_capture(void)
         _sd_err_pipe[0] = _sd_err_pipe[1] = -1;
         return -1;
     }
+    /* Point fd 2 at the write end of the pipe. */
     if (dup2(_sd_err_pipe[1], STDERR_FILENO) < 0) {
         close(_sd_stderr_save); _sd_stderr_save = -1;
         close(_sd_err_pipe[0]); close(_sd_err_pipe[1]);
         _sd_err_pipe[0] = _sd_err_pipe[1] = -1;
         return -1;
     }
+    /* We only need fd 2 to hold the write end; close our spare copy. */
     close(_sd_err_pipe[1]);
     _sd_err_pipe[1] = -1;
     return 0;
 }
 
-/* Restore fd 2 from the saved copy and read whatever was written to
- * the pipe.  If buf is non-NULL, up to bufsz-1 bytes are copied there
- * and NUL-terminated; trailing whitespace is stripped. */
 static void end_stderr_capture(char *buf, size_t bufsz)
 {
     fflush(stderr);
+
+    /* Restore fd 2.  This replaces the write-end of the pipe on fd 2
+     * with the original stderr, which closes the write-end and lets
+     * the read-end reach EOF. */
     if (_sd_stderr_save >= 0) {
         dup2(_sd_stderr_save, STDERR_FILENO);
         close(_sd_stderr_save);
         _sd_stderr_save = -1;
     }
+
     if (_sd_err_pipe[0] >= 0) {
         if (buf && bufsz > 0) {
-            /* Make non-blocking so we can drain without hanging. */
-            int fl = fcntl(_sd_err_pipe[0], F_GETFL, 0);
-            fcntl(_sd_err_pipe[0], F_SETFL, fl | O_NONBLOCK);
-            ssize_t n = read(_sd_err_pipe[0], buf, (ssize_t)(bufsz - 1));
+            int n = read(_sd_err_pipe[0], buf, (int)(bufsz - 1));
             if (n < 0) n = 0;
             buf[n] = '\0';
-            /* Strip trailing newlines / spaces. */
+            /* Strip trailing whitespace. */
             while (n > 0 &&
                    (buf[n-1] == '\n' || buf[n-1] == '\r' || buf[n-1] == ' '))
                 buf[--n] = '\0';
@@ -136,7 +223,6 @@ static void end_stderr_capture(char *buf, size_t bufsz)
  * Global-state management
  * ========================================================= */
 
-/* Close any open database and zero the sqldiff global struct. */
 static void reset_globals(void)
 {
     if (g.db) {
@@ -180,7 +266,6 @@ static void open_db(const char *zDb1, const char *zDb2)
         runtimeError("\"%s\" does not appear to be a valid SQLite database",
                      zDb1);
 
-    /* Verify db2 is readable before attaching. */
     {
         sqlite3 *db2 = NULL;
         rc = sqlite3_open_v2(zDb2, &db2, SQLITE_OPEN_READONLY, 0);
@@ -209,9 +294,7 @@ static PyObject *run_diff(
     int schema_only, int primary_key, int vtab,
     int rbu, int summary, int transaction)
 {
-    char *out_buf  = NULL;
-    size_t out_sz  = 0;
-    FILE  *out     = open_memstream(&out_buf, &out_sz);
+    FILE *out = tmpfile();
     if (!out) { PyErr_SetFromErrno(PyExc_OSError); return NULL; }
 
     begin_stderr_capture();
@@ -223,7 +306,6 @@ static PyObject *run_diff(
         char errbuf[4096];
         end_stderr_capture(errbuf, sizeof(errbuf));
         fclose(out);
-        free(out_buf);
         reset_globals();
         raise_from_errbuf(errbuf);
         return NULL;
@@ -270,11 +352,7 @@ static PyObject *run_diff(
     memset(&g, 0, sizeof(g));
 
     end_stderr_capture(NULL, 0);
-    fclose(out);
-
-    PyObject *result = PyUnicode_FromStringAndSize(out_buf, (Py_ssize_t)out_sz);
-    free(out_buf);
-    return result;
+    return file_to_str(out);   /* closes out */
 }
 
 /* =========================================================
@@ -283,9 +361,7 @@ static PyObject *run_diff(
 static PyObject *run_changeset(
     const char *zDb1, const char *zDb2, const char *zTab)
 {
-    char *out_buf = NULL;
-    size_t out_sz = 0;
-    FILE  *out    = open_memstream(&out_buf, &out_sz);
+    FILE *out = tmpfile();
     if (!out) { PyErr_SetFromErrno(PyExc_OSError); return NULL; }
 
     begin_stderr_capture();
@@ -296,7 +372,6 @@ static PyObject *run_changeset(
         char errbuf[4096];
         end_stderr_capture(errbuf, sizeof(errbuf));
         fclose(out);
-        free(out_buf);
         reset_globals();
         raise_from_errbuf(errbuf);
         return NULL;
@@ -318,11 +393,7 @@ static PyObject *run_changeset(
     memset(&g, 0, sizeof(g));
 
     end_stderr_capture(NULL, 0);
-    fclose(out);
-
-    PyObject *result = PyBytes_FromStringAndSize(out_buf, (Py_ssize_t)out_sz);
-    free(out_buf);
-    return result;
+    return file_to_bytes(out); /* closes out */
 }
 
 /* =========================================================
