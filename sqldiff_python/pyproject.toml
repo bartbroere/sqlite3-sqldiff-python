@@ -1,0 +1,9 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sqldiff"
+version = "0.1.0"
+description = "Python bindings for the SQLite sqldiff utility"
+requires-python = ">=3.8"
