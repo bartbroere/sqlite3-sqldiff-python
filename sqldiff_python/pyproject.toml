@@ -4,9 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sqldiff"
-version = "0.1.0"
 description = "Python bindings for the SQLite sqldiff utility"
 requires-python = ">=3.8"
+# Version is derived at build time from <sqlite-root>/VERSION by setup.py,
+# so it always matches the SQLite release the package was built against.
+dynamic = ["version"]
 
 # ---------------------------------------------------------------------------
 # cibuildwheel configuration
@@ -16,21 +18,27 @@ requires-python = ">=3.8"
 # handles all three platforms automatically.
 
 [tool.cibuildwheel]
-# Build for CPython 3.8–3.13.  Skip PyPy and 32-bit Linux.
+# Build for CPython 3.8–3.13.  Skip PyPy and 32-bit targets.
 build  = "cp3{8,9,10,11,12,13}-*"
 skip   = ["pp*", "*-manylinux_i686", "*-musllinux_i686", "*-win32"]
 
-# The amalgamation is pre-generated; no extra before-build step needed.
-# test-requires / test-command can be added here once a test suite exists.
-
 [tool.cibuildwheel.linux]
-# manylinux2014 is compatible with glibc >= 2.17 (RHEL 7+, Ubuntu 18.04+).
-manylinux-x86_64-image   = "manylinux2014"
-manylinux-aarch64-image  = "manylinux2014"
+# Regenerate the amalgamation from the SQLite source tree checked out
+# alongside this package.  tclsh is required; install it from the
+# manylinux2014 (CentOS 7) package manager first.
+before-all = "yum install -y tcl && python generate_amalgamation.py"
+manylinux-x86_64-image  = "manylinux2014"
+manylinux-aarch64-image = "manylinux2014"
 archs = ["x86_64", "aarch64"]
 
 [tool.cibuildwheel.macos]
+# tclsh ships with macOS; regenerate straight away.
+before-all = "python generate_amalgamation.py"
 archs = ["x86_64", "arm64"]
 
 [tool.cibuildwheel.windows]
+# tclsh / make are not readily available on the Windows runner, so the
+# Windows build uses the committed sqlite_src/sqlite3.{c,h} files.
+# Run  python generate_amalgamation.py  locally (e.g. in MSYS2) and
+# commit the result before triggering a Windows release build.
 archs = ["AMD64", "ARM64"]
