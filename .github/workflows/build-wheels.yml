@@ -21,9 +21,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # cibuildwheel needs the sqldiff_python subdirectory but the
-      # amalgamation files (sqlite_src/) must already be present — they
-      # are committed to the repo so no extra generation step is needed.
+      # Regenerate the SQLite amalgamation (sqlite3.c / sqlite3.h) from the
+      # source tree that was just checked out.  This must happen on the host
+      # *before* cibuildwheel is invoked: on Linux, cibuildwheel runs builds
+      # inside Docker and only copies sqldiff_python/ into the container, so
+      # the parent source tree would not be visible inside Docker.
+      # On Windows tclsh/make are not available, so we rely on the committed
+      # sqlite_src/ files instead.
+      - name: Install tclsh (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y tcl
+
+      - name: Generate SQLite amalgamation
+        if: runner.os != 'Windows'
+        run: python sqldiff_python/generate_amalgamation.py
 
       - name: Set up QEMU (Linux aarch64 emulation)
         if: runner.os == 'Linux'
@@ -51,7 +62,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     environment:
       name: pypi
-      url: https://pypi.org/project/sqldiff/
+      url: https://pypi.org/project/sqlite3-sqldiff/
     permissions:
       id-token: write   # for trusted publishing (OIDC)
 

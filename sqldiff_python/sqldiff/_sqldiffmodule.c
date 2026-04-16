@@ -89,9 +89,11 @@ static int _sd_stderr_save  = -1;   /* saved copy of STDERR_FILENO */
 /* Rename main() so it doesn't clash with Python's own main(). */
 #define main sqldiff_main_unused__
 
-/* sqldiff.c includes "sqlite3_stdio.h" and "sqlite3.h", both of which
- * are resolved from the sqlite_src/ directory added via -I in setup.py. */
-#include "../../tool/sqldiff.c"
+/* sqldiff.c, sqlite3_stdio.h, and sqlite3.h are all resolved from the
+ * sqlite_src/ directory that lives alongside this file.  setup.py copies
+ * sqldiff.c and sqlite3_stdio.{c,h} fresh from the SQLite source tree at
+ * build time; sqlite3.c/h is the pre-generated amalgamation. */
+#include "sqlite_src/sqldiff.c"
 
 #undef exit
 #undef main

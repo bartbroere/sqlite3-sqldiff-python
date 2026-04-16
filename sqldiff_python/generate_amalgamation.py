@@ -95,10 +95,13 @@ def main():
             size = os.path.getsize(dst)
             print(f"Copied {name:12s}  ({size:,} bytes)")
 
-    # Copy sqlite3_stdio.{c,h} from the source tree
-    misc = os.path.join(sqlite_root, "ext", "misc")
-    for name in ("sqlite3_stdio.c", "sqlite3_stdio.h"):
-        src = os.path.join(misc, name)
+    # Copy sqldiff.c from tool/ and sqlite3_stdio.{c,h} from ext/misc/
+    extras = [
+        (os.path.join(sqlite_root, "tool", "sqldiff.c"),        "sqldiff.c"),
+        (os.path.join(sqlite_root, "ext", "misc", "sqlite3_stdio.c"), "sqlite3_stdio.c"),
+        (os.path.join(sqlite_root, "ext", "misc", "sqlite3_stdio.h"), "sqlite3_stdio.h"),
+    ]
+    for src, name in extras:
         dst = os.path.join(_DST, name)
         shutil.copy2(src, dst)
         size = os.path.getsize(dst)
