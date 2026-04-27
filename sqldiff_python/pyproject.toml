@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sqlite3-sqldiff"
 description = "Python bindings for the SQLite sqldiff utility"
+readme = "README.md"
 requires-python = ">=3.10"
 # Version is derived at build time from <sqlite-root>/VERSION by setup.py,
 # so it always matches the SQLite release the package was built against.

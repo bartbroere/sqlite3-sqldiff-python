@@ -161,10 +161,19 @@ ext = Extension(
 # setup()
 # ---------------------------------------------------------------------------
 
+def get_long_description():
+    readme = os.path.join(_HERE, "README.md")
+    if os.path.isfile(readme):
+        with open(readme, encoding="utf-8") as f:
+            return f.read()
+    return ""
+
 setup(
     name="sqlite3-sqldiff",
     version=get_version(),
     description="Python bindings for the SQLite sqldiff utility",
+    long_description=get_long_description(),
+    long_description_content_type="text/markdown",
     packages=["sqldiff"],
     package_data={"sqldiff": ["sqlite_src/*.h", "sqlite_src/*.c"]},
     ext_modules=[ext],
